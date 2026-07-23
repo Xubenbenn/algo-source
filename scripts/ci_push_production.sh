@@ -72,10 +72,11 @@ fi
 # 切换到 production 分支 (孤儿分支, 与 main 完全独立)
 git checkout --orphan production 2>/dev/null || git checkout production 2>/dev/null || true
 
-# 清空 production 分支内容 (仅保留裁剪源码)
+# 清空 production 分支内容 — 安全方式, 保护 .git 目录
+# ① 清除 git 索引
 git rm -rf --cached . 2>/dev/null || true
-rm -rf ./* 2>/dev/null || true
-rm -rf ./.[!.]* 2>/dev/null || true  # 清理隐藏文件
+# ② 清除工作树中所有文件和目录, 但排除 .git/
+find . -mindepth 1 -not -path './.git' -not -path './.git/*' -delete 2>/dev/null || true
 
 # 拷贝裁剪源码
 cp -r "${TMP_OUTPUT}/model" .

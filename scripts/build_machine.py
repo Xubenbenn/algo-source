@@ -249,15 +249,17 @@ def main():
         # tmp_dir 中文件路径含 model/ 前缀, 直接移动
         shutil.move(os.path.join(tmp_dir, "model"), model_output)
 
-        # 统计
+        # 统计 (仅 model/, 不包含部署仓自身的 adapters/tests)
         py_count = 0
         total_lines = 0
-        for root, _, files in os.walk(output_dir):
-            for f in files:
-                if f.endswith(".py"):
-                    py_count += 1
-                    with open(os.path.join(root, f)) as fp:
-                        total_lines += len(fp.readlines())
+        stat_dir = os.path.join(output_dir, "model")
+        if os.path.isdir(stat_dir):
+            for root, _, files in os.walk(stat_dir):
+                for f in files:
+                    if f.endswith(".py"):
+                        py_count += 1
+                        with open(os.path.join(root, f)) as fp:
+                            total_lines += len(fp.readlines())
         print(f"\n✅ 构建完成: {py_count} 个 .py 文件, {total_lines} 行源码")
         print(f"   输出目录: {output_dir}")
         print(f"   下一步: bash scripts/ci_push_production.sh")
