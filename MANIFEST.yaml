@@ -1,0 +1,87 @@
+# ============================================================
+# MANIFEST.yaml — 机台制品筛选规则 (两层)
+# 此文件是 code review 对象, 修改需至少一位 reviewer 确认
+# ============================================================
+
+version: 2
+target: machine
+
+# ── 第一层: 文件粒度筛选 ──────────────────────────────────
+# include 列表中的文件/目录进入制品, exclude 从 include 中排除
+modules:
+  include:
+    # 矩阵运算 — 仅保留基础运算和求解
+    - model/matrix_ops/basic.py
+    - model/matrix_ops/solve.py
+    # 注意: decomposition.py 不进制品 (仿真调试专用)
+
+    # SVD — 全部进入, 但第二层会裁剪
+    - model/svd/
+
+    # 多项式拟合 — 全部进入, 但第二层会裁剪
+    - model/polyfit/
+
+    # 保留 __init__.py 以便包导入
+    - model/matrix_ops/__init__.py
+    - model/svd/__init__.py
+    - model/polyfit/__init__.py
+
+  exclude:
+    # 仿真工具 — 永久排除
+    - sim/
+    # 全部测试代码
+    - tests/
+    # 构建脚本 (仅开发仓使用)
+    - scripts/
+    # 研发配置文件
+    - pytest.ini
+    - MANIFEST.yaml
+
+# ── 第二层: 接口粒度 AST 裁剪 ──────────────────────────────
+# 对 include 中的文件, 仅保留 exports 列表内的接口
+# 被保留接口静态调用的辅助函数自动保留 (可达性分析)
+# 类: 保守策略 — 若接口是类名则保留整个类
+api_filter:
+  # SVD: 机台只需基础分解 + 数值秩, 不需要 Tikhonov 正则化
+  - file: model/svd/decompose.py
+    exports:
+      - svd_full
+      - svd_economy
+      - singular_values
+      - svd_rank
+
+  # SVD: 机台只需伪逆求解, 不需要 Tikhonov
+  - file: model/svd/pseudo_inverse.py
+    exports:
+      - pseudo_inverse
+      - solve_via_svd
+
+  # SVD: 机台只需条件数判断矩阵健康度
+  - file: model/svd/approximation.py
+    exports:
+      - condition_number
+
+  # 多项式拟合: 机台只需基础拟合+求值, 不需要加权拟合
+  - file: model/polyfit/fitting.py
+    exports:
+      - polyfit_ls
+      - polyval
+      - poly_residual
+      - r2_score
+
+  # 多项式插值: 机台只需样条插值
+  - file: model/polyfit/interpolation.py
+    exports:
+      - cubic_spline
+
+  # 多项式求根: 机台无需 (交互式分析用)
+  - file: model/polyfit/roots.py
+    exports:
+      - poly_roots
+
+# ── 许可证白名单 ─────────────────────────────────────────
+license_allowlist:
+  - MIT
+  - BSD
+  - Apache-2.0
+  - PSF
