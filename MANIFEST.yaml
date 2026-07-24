@@ -18,10 +18,10 @@ build:
     - "**/__pycache__/**"
     - "**/*.pyc"
 
-    # 矩阵分解模块 — 仅仿真调试用, 不进入机台
-    - "**/decomposition.py"
-
-    # 实验/调试模块 (示例: 可按需增删)
+    # 实验/调试模块 (按需增删)
+    # 注意: 排除前确保该模块不被其他保留文件 import,
+    #       否则会导致 ImportError。可用 git grep 检查依赖。
+    # - "**/decomposition.py"
     # - "**/experimental/**"
     # - "**/legacy/**"
 
