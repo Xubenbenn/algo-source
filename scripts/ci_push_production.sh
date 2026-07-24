@@ -95,17 +95,10 @@ echo "📦 沙箱: ${SANDBOX}"
 echo ""
 echo "━━━ 阶段 1: 准备源码 ━━━"
 
-# clone main（depth=1 只拉最新, 然后 fetch 指定 commit）
-git clone --depth 1 --branch main \
+# clone main（不带 --depth, 需要完整历史以 checkout 任意 commit）
+git clone --branch main \
     "${SOURCE_REPO}" "${SANDBOX}/source" 2>&1 | tail -1
 cd "${SANDBOX}/source"
-
-# fetch 指定 commit（depth=1 的仓库需要先 unshallow 或直接 fetch）
-git fetch --depth 1 origin "${COMMIT}" 2>/dev/null || {
-    # 如果 commit 太老, depth=1 不够, 拉全量
-    git fetch --unshallow 2>/dev/null || true
-    git fetch origin "${COMMIT}"
-}
 
 # checkout 到指定 commit
 git checkout "${COMMIT}" 2>/dev/null || {
@@ -121,8 +114,8 @@ if ! git merge-base --is-ancestor "${COMMIT}" origin/main 2>/dev/null; then
 fi
 echo "  ✅ ${COMMIT_SHORT} 已合入 origin/main"
 
-# clone 产品仓
-git clone --depth 1 --branch main \
+# clone 产品仓（完整历史, 需要 production 分支历史做线性追加）
+git clone --branch main \
     "${DEPLOY_REPO}" "${SANDBOX}/deploy" 2>&1 | tail -1
 echo "  ✅ 产品仓 → deploy/"
 
