@@ -19,8 +19,8 @@ build:
     - "**/*.pyc"
 
     # 实验/调试模块 (按需增删)
-    # 注意: 排除前确保该模块不被其他保留文件 import,
-    #       否则会导致 ImportError。可用 git grep 检查依赖。
+    # 排除前确认: L1/L2 三级校验会自动检测 ImportError,
+    # 若 CI 流水线 L1 或 L2 失败则说明排除规则破坏了依赖链
     # - "**/decomposition.py"
     # - "**/experimental/**"
     # - "**/legacy/**"

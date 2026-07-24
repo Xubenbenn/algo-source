@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# ci_push_production.sh — 沙箱闭环: 构建裁剪源码 → 测试 → 推送到产品仓 production 分支
+# ci_push_production.sh — 沙箱闭环: 构建裁剪源码 → 三级校验 → 推送到产品仓 production 分支
 #
 # 沙箱模型:
 #   /tmp/ci_XXXXX/
@@ -14,16 +14,17 @@
 # 流水线阶段:
 #   ① clone 两仓到沙箱
 #   ② venv + pyyaml (构建依赖)
-#   ③ build_machine.py 两层筛选
-#   ③.5a 安装测试依赖 + 裁剪产物导入完整性检查
-#   ③.5b pytest -m prod 生产用例 (任一失败 → 推送中止)
-#   ④ 推送 production 分支 + 打 tag
+#   ③ build_machine.py 文件级黑名单裁剪 + ASCII 树状图
+#   ④ 三级校验 (任一失败 → 推送中止):
+#      L1 包级导入 (秒级, 零额外依赖)
+#      L2 逐模块导入 (秒级, 精确定位断裂点)
+#      L3 生产测试 (分钟级, 核心计算路径)
+#   ⑤ 推送 production 分支 + 打 tag
 #
-# 依赖清单:
+# 依赖:
 #   系统:     bash, git, python3.9+, find, mktemp
-#   Python 构建: pyyaml
-#   Python 测试: pyyaml, pytest, numpy, scipy
-#   全部在沙箱 venv 内安装, 不污染系统
+#   Python 构建:  pyyaml
+#   Python L2/L3: pyyaml, pytest, numpy, scipy (沙箱 venv 内)
 #
 # 用法:
 #   bash ci_push_production.sh                          # 默认 main 分支
@@ -122,7 +123,7 @@ pip install --quiet pyyaml 2>&1 | tail -1
 echo "  ✅ venv + pyyaml (构建依赖)"
 
 # ════════════════════════════════════════════════════════════
-# 阶段 3: 两层筛选构建
+# 阶段 3: 文件级黑名单裁剪 + 树状图
 # ════════════════════════════════════════════════════════════
 echo ""
 echo "━━━ 阶段 3: 文件级裁剪构建 ━━━"
@@ -140,10 +141,26 @@ PY_COUNT=$(find "$MODEL_DIR" -name "*.py" -type f | wc -l | tr -d ' ')
 echo "  产出: ${PY_COUNT} 个 .py 文件"
 
 # ════════════════════════════════════════════════════════════
-# 阶段 3.5a: 测试依赖 + 裁剪产物导入完整性
+# 三级校验: L1 → L2 → L3, 任一失败 → 推送中止
 # ════════════════════════════════════════════════════════════
+
+# ── L1: 快闸 — 整个 model 包导入 (秒级, 零额外依赖) ──
 echo ""
-echo "━━━ 阶段 3.5a: 裁剪产物导入完整性 ━━━"
+echo "━━━ L1: 包级导入 (快速闸门) ━━━"
+cd "${SANDBOX}/output"
+python3 -B -c "
+import sys; sys.path.insert(0, '.')
+try:
+    import model
+    print('   ✅ L1 通过: model 包导入正常')
+except Exception as e:
+    print(f'   ❌ L1 失败: {type(e).__name__}: {e}')
+    sys.exit(1)
+" || { echo ""; echo "❌ L1 未通过, 推送中止 (无需安装测试依赖)"; exit 1; }
+
+# ── L2: 逐模块导入 — 每个 .py 独立加载 (精确定位断裂点) ──
+echo ""
+echo "━━━ L2: 逐模块导入 ━━━"
 pip install --quiet pytest numpy scipy 2>&1 | tail -1
 
 cd "${SANDBOX}/output"
@@ -162,18 +179,16 @@ for f in files:
     except Exception as e:
         errors.append((mod, type(e).__name__))
 if errors:
-    print(f'   ❌ {len(errors)}/{total} 个模块导入失败:')
+    print(f'   ❌ L2 失败: {len(errors)}/{total} 个模块导入异常')
     for mod, err in errors:
         print(f'      {mod} → {err}')
     sys.exit(1)
-print(f'   ✅ 全部 {total} 个文件导入正常')
-"
-echo ""
+print(f'   ✅ L2 通过: 全部 {total} 个模块导入正常')
+" || { echo ""; echo "❌ L2 未通过, 推送中止"; exit 1; }
 
-# ════════════════════════════════════════════════════════════
-# 阶段 3.5b: 生产测试用例 (任一失败 → 推送中止)
-# ════════════════════════════════════════════════════════════
-echo "━━━ 阶段 3.5b: 生产测试 (pytest -m prod) ━━━"
+# ── L3: 生产测试 — 核心计算路径正确性 ──
+echo ""
+echo "━━━ L3: 生产测试 (pytest -m prod) ━━━"
 
 cd "${SANDBOX}/source"
 set +e
@@ -183,10 +198,10 @@ set -e
 
 if [ $PYTEST_EXIT -ne 0 ]; then
     echo ""
-    echo "❌ 生产测试失败 (exit=${PYTEST_EXIT}), 推送中止"
+    echo "❌ L3 未通过 (exit=${PYTEST_EXIT}), 推送中止"
     exit 1
 fi
-echo "  ✅ 生产测试通过"
+echo "  ✅ L3 通过: 生产测试全部通过"
 
 # ════════════════════════════════════════════════════════════
 # 阶段 4: 推送到产品仓 production 分支
