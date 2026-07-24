@@ -32,7 +32,7 @@ def main() -> None:
     # 脚本所在目录 → 添加 sys.path 以便导入 file_filter
     script_dir = Path(__file__).resolve().parent
     sys.path.insert(0, str(script_dir))
-    from file_filter import apply_exclude_filter, print_tree
+    from file_filter import apply_exclude_filter, print_tree, scan_strings
 
     # 路径解析
     manifest_path = Path(args.manifest).resolve()
@@ -78,6 +78,18 @@ def main() -> None:
 
     # 执行裁剪
     kept, excluded = apply_exclude_filter(src_root, dst_root, patterns)
+
+    # 字符串黑名单扫描 (裁剪后、树状图前)
+    str_blacklist = manifest.get("build", {}).get("string_blacklist", [])
+    if str_blacklist:
+        print(f"\n🔍 字符串黑名单扫描 ({len(str_blacklist)} 条规则)...")
+        hits = scan_strings(kept, dst_root, str_blacklist)
+        if hits:
+            print(f"❌ 命中 {len(hits)} 处:")
+            for f_rel, lineno, matched in hits:
+                print(f"   {f_rel}:{lineno} → \"{matched}\"")
+            sys.exit(1)
+        print("   ✅ 通过")
 
     # 树状图报告
     print_tree(

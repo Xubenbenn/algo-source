@@ -27,3 +27,10 @@ build:
 
     # 合规: 排除含 GPL 代码的文件 (示例)
     # - "**/*_gpl.py"
+
+  # 字符串黑名单 — 裁剪完成后扫描所有保留的 .py 文件
+  # 命中任一规则 → 构建中止
+  string_blacklist:
+    # - "GPL-3.0"
+    # - "proprietary_key_xxxx"
+    # - "internal.dev.company.com"

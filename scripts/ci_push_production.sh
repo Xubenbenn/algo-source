@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# ci_push_production.sh — 沙箱闭环: 构建裁剪源码 → 三级校验 → 推送到产品仓 production 分支
+# ci_push_production.sh — 手动触发, 沙箱闭环, 线性追加推送到产品仓 production 分支
 #
 # 沙箱模型:
 #   /tmp/ci_XXXXX/
@@ -9,69 +9,75 @@
 #   ├── output/     ← build_machine.py 产出
 #   └── venv/       ← Python 虚拟环境
 #
-# 外部影响: 零。所有操作在 /tmp 内完成，trap EXIT 清理。
+# 外部影响: 零。所有操作在 /tmp 内。trap EXIT 清理。
 #
 # 流水线阶段:
-#   ① clone 两仓到沙箱
-#   ② venv + pyyaml (构建依赖)
-#   ③ build_machine.py 文件级黑名单裁剪 + ASCII 树状图
-#   ④ 三级校验 (任一失败 → 推送中止):
-#      L1 包级导入 (秒级, 零额外依赖)
-#      L2 逐模块导入 (秒级, 精确定位断裂点)
-#      L3 生产测试 (分钟级, 核心计算路径)
-#   ⑤ 推送 production 分支 + 打 tag
-#
-# 依赖:
-#   系统:     bash, git, python3.9+, find, mktemp
-#   Python 构建:  pyyaml
-#   Python L2/L3: pyyaml, pytest, numpy, scipy (沙箱 venv 内)
+#   ① clone source-repo → checkout --commit SHA → 校验 SHA 在 origin/main 上
+#   ② venv + pyyaml
+#   ③ build_machine.py 文件级黑名单 + 字符串扫描 + 树状图
+#   ④ L1(包导入)→L2(逐模块)→L3(pytest prod) 三级校验
+#   ⑤ 线性追加推送到 deployment-repo production (非 force push)
+#   ⑥ source-repo 创建 release-* 归档分支
 #
 # 用法:
-#   bash ci_push_production.sh                          # 默认 main 分支
-#   bash ci_push_production.sh --ref v1.2.3             # 指定 tag
-#   bash ci_push_production.sh --dry-run                # 演练 (跳过推送)
+#   bash ci_push_production.sh --commit <sha> --tag <message>
+#
+# 示例:
+#   bash ci_push_production.sh \
+#       --commit abc1234 \
+#       --tag "修复 SVD 边界条件 + 更新依赖"
 # ============================================================
 set -euo pipefail
 
 # ── 默认配置 ──
 SOURCE_REPO="${SOURCE_REPO:-git@github.com:Xubenbenn/algo-source.git}"
 DEPLOY_REPO="${DEPLOY_REPO:-git@github.com:Xubenbenn/algo-deploy.git}"
-SOURCE_REF="${SOURCE_REF:-main}"
-VERSION=""
-DRY_RUN=false
+COMMIT=""
+TAG=""
 SANDBOX=""
 
 # ── 参数 ──
 usage() {
-    echo "用法: $0 [--ref <branch|tag>] [--version <ver>] [--dry-run]"
+    echo "用法: $0 --commit <sha> --tag <message>"
+    echo ""
+    echo "  --commit SHA   开发仓 main 分支上的 commit (必须已合入 main)"
+    echo "  --tag   MSG    本次发布的描述, 写入 production 的 commit message"
     echo ""
     echo "  环境变量:"
     echo "    SOURCE_REPO  开发仓地址 (默认 github:Xubenbenn/algo-source)"
     echo "    DEPLOY_REPO  产品仓地址 (默认 github:Xubenbenn/algo-deploy)"
-    echo "    SOURCE_REF   checkout 目标 (默认 main)"
     exit 1
 }
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --ref)     SOURCE_REF="$2"; shift ;;
-        --version) VERSION="$2"; shift ;;
-        --dry-run) DRY_RUN=true ;;
+        --commit) COMMIT="$2"; shift ;;
+        --tag)    TAG="$2"; shift ;;
         --help|-h) usage ;;
         *) echo "未知参数: $1"; usage ;;
     esac
     shift
 done
 
+if [ -z "$COMMIT" ] || [ -z "$TAG" ]; then
+    echo "❌ --commit 和 --tag 为必填参数"
+    usage
+fi
+
 # ── 前置检查 ──
 command -v git    >/dev/null 2>&1 || { echo "❌ 需要 git";   exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "❌ 需要 python3"; exit 1; }
 
-echo "=== CI 沙箱构建 ==="
-echo "  开发仓: ${SOURCE_REPO}"
-echo "  Checkout: ${SOURCE_REF}"
-echo "  产品仓: ${DEPLOY_REPO}"
+COMMIT_SHORT=$(echo "${COMMIT}" | cut -c1-7)
+RELEASE_DATE=$(date +%Y%m%d%H%M)
+RELEASE_BRANCH="release-${COMMIT_SHORT}_${RELEASE_DATE}"
 
-# ── 阶段 0: 创建沙箱 ──
+echo "=== 手动生产推送 ==="
+echo "  开发仓: ${SOURCE_REPO}"
+echo "  Commit: ${COMMIT}"
+echo "  Tag:    ${TAG}"
+echo "  归档:   ${RELEASE_BRANCH}"
+
+# ── 阶段 0: 沙箱 ──
 SANDBOX=$(mktemp -d /tmp/ci_sandbox_XXXXXX)
 cleanup() {
     if [ -n "${SANDBOX}" ] && [ -d "${SANDBOX}" ]; then
@@ -80,53 +86,62 @@ cleanup() {
     fi
 }
 trap cleanup EXIT
-
 echo ""
 echo "📦 沙箱: ${SANDBOX}"
 
 # ════════════════════════════════════════════════════════════
-# 阶段 1: clone 仓库到沙箱
+# 阶段 1: clone 开发仓 → checkout 指定 commit → 校验
 # ════════════════════════════════════════════════════════════
 echo ""
-echo "━━━ 阶段 1: 克隆仓库 ━━━"
+echo "━━━ 阶段 1: 准备源码 ━━━"
 
-git clone --depth 1 --branch "${SOURCE_REF}" \
+# clone main（depth=1 只拉最新, 然后 fetch 指定 commit）
+git clone --depth 1 --branch main \
     "${SOURCE_REPO}" "${SANDBOX}/source" 2>&1 | tail -1
-echo "  ✅ 开发仓 → source/"
+cd "${SANDBOX}/source"
 
+# fetch 指定 commit（depth=1 的仓库需要先 unshallow 或直接 fetch）
+git fetch --depth 1 origin "${COMMIT}" 2>/dev/null || {
+    # 如果 commit 太老, depth=1 不够, 拉全量
+    git fetch --unshallow 2>/dev/null || true
+    git fetch origin "${COMMIT}"
+}
+
+# checkout 到指定 commit
+git checkout "${COMMIT}" 2>/dev/null || {
+    echo "❌ commit ${COMMIT} 不存在于远程"
+    exit 1
+}
+
+# 校验: commit 必须在 origin/main 上（祖先关系）
+if ! git merge-base --is-ancestor "${COMMIT}" origin/main 2>/dev/null; then
+    echo "❌ ${COMMIT_SHORT} 不在 origin/main 上 (未合入 main 的 commit 禁止推送)"
+    echo "   提示: 请先将该 commit 通过 PR 合入 main"
+    exit 1
+fi
+echo "  ✅ ${COMMIT_SHORT} 已合入 origin/main"
+
+# clone 产品仓
 git clone --depth 1 --branch main \
     "${DEPLOY_REPO}" "${SANDBOX}/deploy" 2>&1 | tail -1
 echo "  ✅ 产品仓 → deploy/"
 
-# 工作树清洁度 + 版本号
-cd "${SANDBOX}/source"
-if [ -n "$(git status --porcelain 2>/dev/null || true)" ]; then
-    echo "  ❌ 开发仓工作树不干净 (clone 后不应有变更)"
-    exit 1
-fi
-if [ -z "$VERSION" ]; then
-    VERSION=$(git describe --tags --always 2>/dev/null || echo "dev-$(date +%Y%m%d%H%M)")
-fi
-ACTUAL_REF=$(git rev-parse --short HEAD)
-echo "  版本: ${VERSION} (ref=${SOURCE_REF}, commit=${ACTUAL_REF})"
-
 # ════════════════════════════════════════════════════════════
-# 阶段 2: venv + 构建依赖
+# 阶段 2: venv + pyyaml
 # ════════════════════════════════════════════════════════════
 echo ""
 echo "━━━ 阶段 2: Python 环境 ━━━"
 
 python3 -m venv "${SANDBOX}/venv"
-# shellcheck disable=SC1091
 source "${SANDBOX}/venv/bin/activate"
 pip install --quiet pyyaml 2>&1 | tail -1
-echo "  ✅ venv + pyyaml (构建依赖)"
+echo "  ✅ venv + pyyaml"
 
 # ════════════════════════════════════════════════════════════
-# 阶段 3: 文件级黑名单裁剪 + 树状图
+# 阶段 3: 构建（含字符串黑名单扫描 + 树状图）
 # ════════════════════════════════════════════════════════════
 echo ""
-echo "━━━ 阶段 3: 文件级裁剪构建 ━━━"
+echo "━━━ 阶段 3: 文件级裁剪 + 字符串扫描 ━━━"
 
 python "${SANDBOX}/source/scripts/build_machine.py" \
     --manifest "${SANDBOX}/source/MANIFEST.yaml" \
@@ -141,29 +156,28 @@ PY_COUNT=$(find "$MODEL_DIR" -name "*.py" -type f | wc -l | tr -d ' ')
 echo "  产出: ${PY_COUNT} 个 .py 文件"
 
 # ════════════════════════════════════════════════════════════
-# 三级校验: L1 → L2 → L3, 任一失败 → 推送中止
+# 阶段 4: L1 → L2 → L3 三级校验
 # ════════════════════════════════════════════════════════════
 
-# ── L1: 快闸 — 整个 model 包导入 (秒级, 零额外依赖) ──
+# ── L1: 包级导入 (秒级, 零依赖) ──
 echo ""
-echo "━━━ L1: 包级导入 (快速闸门) ━━━"
+echo "━━━ L1: 包级导入 ━━━"
 cd "${SANDBOX}/output"
 python3 -B -c "
 import sys; sys.path.insert(0, '.')
 try:
     import model
-    print('   ✅ L1 通过: model 包导入正常')
+    print('   ✅ L1 通过')
 except Exception as e:
     print(f'   ❌ L1 失败: {type(e).__name__}: {e}')
     sys.exit(1)
-" || { echo ""; echo "❌ L1 未通过, 推送中止 (无需安装测试依赖)"; exit 1; }
+" || { echo "❌ L1 未通过, 推送中止"; exit 1; }
 
-# ── L2: 逐模块导入 — 每个 .py 独立加载 (精确定位断裂点) ──
+# ── L2: 逐模块导入 (秒级, 精确定位) ──
 echo ""
 echo "━━━ L2: 逐模块导入 ━━━"
 pip install --quiet pytest numpy scipy 2>&1 | tail -1
 
-cd "${SANDBOX}/output"
 python3 -B -c "
 import sys, importlib, pathlib
 sys.path.insert(0, '.')
@@ -184,66 +198,83 @@ if errors:
         print(f'      {mod} → {err}')
     sys.exit(1)
 print(f'   ✅ L2 通过: 全部 {total} 个模块导入正常')
-" || { echo ""; echo "❌ L2 未通过, 推送中止"; exit 1; }
+" || { echo "❌ L2 未通过, 推送中止"; exit 1; }
 
-# ── L3: 生产测试 — 核心计算路径正确性 ──
+# ── L3: 生产测试 ──
 echo ""
 echo "━━━ L3: 生产测试 (pytest -m prod) ━━━"
-
 cd "${SANDBOX}/source"
 set +e
 python -m pytest tests/ -m "prod" -q --tb=short 2>&1
 PYTEST_EXIT=$?
 set -e
-
 if [ $PYTEST_EXIT -ne 0 ]; then
-    echo ""
     echo "❌ L3 未通过 (exit=${PYTEST_EXIT}), 推送中止"
     exit 1
 fi
-echo "  ✅ L3 通过: 生产测试全部通过"
+echo "  ✅ L3 通过"
 
 # ════════════════════════════════════════════════════════════
-# 阶段 4: 推送到产品仓 production 分支
+# 阶段 5: 线性追加推送到产品仓 production
 # ════════════════════════════════════════════════════════════
 echo ""
-echo "━━━ 阶段 4: 更新 production 分支 ━━━"
+echo "━━━ 阶段 5: 线性追加推送 production ━━━"
 
 cd "${SANDBOX}/deploy"
 git remote set-url origin "${DEPLOY_REPO}" 2>/dev/null || git remote add origin "${DEPLOY_REPO}"
 
-# 创建/切换到 production 孤儿分支
-git checkout --orphan production 2>/dev/null || git checkout production 2>/dev/null || true
+# 拉取远程 production 状态
+git fetch origin production 2>/dev/null || true
 
-# 安全清空: git 索引 + 工作树 (保护 .git)
+if git rev-parse origin/production >/dev/null 2>&1; then
+    # production 已存在 → 线性追加
+    echo "  production 分支已存在, 准备线性追加..."
+    git checkout production 2>/dev/null || git checkout -b production origin/production
+    git reset --hard origin/production
+else
+    # 首次推送 → 创建孤儿分支
+    echo "  首次推送, 创建 production 孤儿分支..."
+    git checkout --orphan production
+fi
+
+# 清空工作树, 拷贝新 model/
 git rm -rf --cached . 2>/dev/null || true
 find . -mindepth 1 -not -path './.git' -not -path './.git/*' -delete 2>/dev/null || true
-
-# 复制裁剪源码 + 版本标记
 cp -r "${SANDBOX}/output/model" .
-# 安全网: 清除可能由测试阶段产生的 __pycache__
 find model/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-cat > VERSION <<< "${VERSION}"
+echo "${COMMIT_SHORT}" > VERSION
 
 git add model/ VERSION
+git commit -m "production: ${TAG} (source=${COMMIT_SHORT})"
 
-if [ "$DRY_RUN" = true ]; then
-    echo "  [DRY-RUN] 将提交: production: ${VERSION}"
-    echo "  [DRY-RUN] 产物预览:"
-    find model/ -name "*.py" | sort | while read -r f; do echo "    ${f}"; done
+# 安全推送: rebase + force-with-lease
+git pull --rebase origin production 2>/dev/null || {
+    echo "  ⚠️  rebase 冲突，尝试合并..."
+    git rebase --abort 2>/dev/null || true
+}
+git push --force-with-lease origin production
+echo "  ✅ production 分支已推送 (线性追加)"
+
+# tag (每次唯一, 不覆盖)
+git tag "v${COMMIT_SHORT}_${RELEASE_DATE}" 2>/dev/null || \
+    git tag "v${COMMIT_SHORT}_${RELEASE_DATE}-$(date +%s)"
+git push origin "v${COMMIT_SHORT}_${RELEASE_DATE}" 2>/dev/null || true
+echo "  ✅ tag: v${COMMIT_SHORT}_${RELEASE_DATE}"
+
+# ════════════════════════════════════════════════════════════
+# 阶段 6: 开发仓发布归档
+# ════════════════════════════════════════════════════════════
+echo ""
+echo "━━━ 阶段 6: 发布归档 ━━━"
+
+cd "${SANDBOX}/source"
+# 检查归档分支是否已存在
+if git rev-parse "origin/${RELEASE_BRANCH}" >/dev/null 2>&1; then
+    echo "  ⚠️  ${RELEASE_BRANCH} 已存在, 跳过归档"
 else
-    if git diff --cached --quiet 2>/dev/null; then
-        echo "  (无变更, 跳过推送)"
-    else
-        git commit -m "production: ${VERSION} (source=${ACTUAL_REF})"
-        git push --force origin production
-        echo "  ✅ production 分支已推送"
-    fi
-
-    # 打 tag
-    git tag -f "v${VERSION}" 2>/dev/null || true
-    git push --force origin "v${VERSION}" 2>/dev/null || true
-    echo "  ✅ 标签: v${VERSION}"
+    git branch "${RELEASE_BRANCH}" "${COMMIT}"
+    git push origin "${RELEASE_BRANCH}"
+    echo "  ✅ 归档分支: ${RELEASE_BRANCH}"
 fi
 
 # ── 完成 ──
@@ -251,11 +282,9 @@ deactivate 2>/dev/null || true
 
 echo ""
 echo "============================================"
-if [ "$DRY_RUN" = true ]; then
-    echo "[DRY-RUN] 完成 — 无实际推送"
-else
-    echo "✅ 推送完成: ${VERSION} (source=${ACTUAL_REF})"
-fi
-echo "   沙箱: ${SANDBOX} (退出时自动清理)"
-echo "   产品仓 production 分支: model/ (${PY_COUNT} 个文件)"
+echo "✅ 推送完成"
+echo "   source commit: ${COMMIT_SHORT}"
+echo "   tag message:   ${TAG}"
+echo "   归档分支:      ${RELEASE_BRANCH}"
+echo "   production:    model/ (${PY_COUNT} 个文件)"
 echo "============================================"

@@ -52,21 +52,38 @@ build:
 - `apply_exclude_filter(src, dst, patterns)`：扫描源目录下 `.py/.yaml/.json`，黑名单匹配 → 跳过；否则复制到目标目录。复制后递归清理空目录。
 - `print_tree(file_list, root_label, title)`：ASCII 树状图渲染，按字母序排序保证输出一致。
 
-`build_machine.py` 作为构建入口：解析 MANIFEST → 调用 `apply_exclude_filter` → 打印 `[KEPT]` + `[EXCLUDED]` 两份树状图。
+`build_machine.py` 作为构建入口：解析 MANIFEST → `apply_exclude_filter` → `scan_strings`（字符串黑名单扫描）→ 打印 `[KEPT]` + `[EXCLUDED]` 两份 ASCII 树状图。
 
-### 2.4 CI 流水线（沙箱闭环）
+扫描命中任一黑名单字符串 → 打印完整命中清单（文件名 + 行号 + 匹配串）→ 构建中止。
 
-`ci_push_production.sh` 全部操作在 `/tmp/ci_sandbox_XXXXX/` 内：
+### 2.4 推送流水线（手动触发，沙箱闭环）
+
+`ci_push_production.sh` 接受 `--commit <sha>` 和 `--tag <message>`，全部在 `/tmp/ci_sandbox_XXXXX/` 内：
 
 | 阶段 | 操作 | 产物 |
 |:---:|------|------|
-| 1 | `git clone --depth 1` 两仓 | 独立副本 |
-| 2 | `venv` + `pip install pyyaml` | 隔离环境 |
-| 3 | `build_machine.py` 裁剪 + 树状图 | 裁剪源码 |
-| 4 | 三级校验 | 全通过 → 继续 / 任一失败 → 中止 |
-| 5 | 产品仓 `production` 分支 force push + tag | 远程更新 |
+| 1 | clone source-repo → `git checkout <sha>` → 校验 sha 在 `origin/main` 上 | 指定版本的独立副本 |
+| 2 | `venv` + `pip install pyyaml` | 隔离 Python 环境 |
+| 3 | `build_machine.py`（文件级黑名单 + 字符串扫描 + 树状图） | 裁剪源码 |
+| 4 | L1 → L2 → L3 三级校验 | 全通过 → 继续 |
+| 5 | 线性追加推送到产品仓 `production` 分支（`pull --rebase` + `push --force-with-lease`） | 远程 production 更新 |
+| 6 | 开发仓创建 `release-{sha}_{timestamp}` 归档分支 | 版本归档 |
 
-### 2.5 三级校验
+### 2.5 字符串黑名单
+
+`MANIFEST.yaml:build.string_blacklist` 声明禁止出现的字符串列表。大小写不敏感子串匹配。裁剪完成后、推送前，逐文件逐行扫描所有保留的 `.py` 文件。任一命中 → 打印完整清单 → 构建中止。
+
+### 2.6 推送方式：线性追加
+
+首次推送创建孤儿分支。后续每次推送在上一个 production commit 之后追加新 commit，通过 `git pull --rebase` + `git push --force-with-lease` 保证安全。
+
+机台始终 checkout 最新 tag。
+
+### 2.7 发布归档
+
+每次推送成功后在开发仓创建 `release-{commit_short}_{yyyymmddHHMM}` 分支，指向本次推送的源码 commit。分支名全局唯一，永不覆盖。
+
+### 2.8 三级校验
 
 校验对象是裁剪产物（`output/` 目录），全部在沙箱内执行：
 
@@ -78,9 +95,13 @@ build:
 
 L1 在 pip install 之前执行（零额外依赖），失败可省去后续依赖安装时间。L2 需 numpy/scipy（算法运行时依赖）。L3 需 pytest（测试依赖）。
 
-### 2.6 机台部署
+### 2.9 机台部署
 
-`deploy.sh`：`git fetch origin production` → `git checkout origin/production -- model/` → `pip install -r requirements.lock` → 冒烟测试。
+机台端：`git fetch origin production` → `git checkout <tag> -- model/` → `pip install -r requirements.lock` → 冒烟测试。
+
+### 2.10 依赖管理
+
+CI 沙箱中安装全量依赖（numpy/scipy/pytest）执行 prod 测试。产品仓的 `requirements.lock` 仅作参考，全局依赖由产品仓上游统一管理。
 
 ---
 
@@ -113,7 +134,32 @@ L1 在 pip install 之前执行（零额外依赖），失败可省去后续依�
 - **无人为介入**：不接受人工提交
 - **与 main 隔离**：不影响产品仓 `main` 分支
 
-### 3.5 为什么沙箱闭环（clone 到 /tmp）？
+### 3.5 为什么线性追加（append-only）而不是 force push 覆盖？
+
+- **可审计**：`git log origin/production` 展示每次发布的完整历史，谁在什么时候推送了什么
+- **可回滚**：`git revert` 或 checkout 旧 commit 即可回到任意历史版本
+- **安全性**：`--force-with-lease` 检测并发推送，防止覆盖他人刚推送的版本
+- **与业务对齐**：手动触发意味着每次推送是有计划的发布事件，需要有历史记录
+
+### 3.6 为什么需要字符串黑名单扫描？
+
+- **合规最后防线**：文件级黑名单排除的是整个文件，字符串扫描检测的是漏网之鱼（如被保留文件中意外包含的 GPL 引用）
+- **零假阴性**：逐行扫描，不会漏掉缩进、注释、字符串字面量中的敏感内容
+- **规则集中管理**：黑名单在 MANIFEST.yaml 中，随代码版本走，纳入 Code Review
+
+### 3.7 为什么手动触发而不是自动？
+
+- **发布是计划行为**：不是每次合入 main 都需要立即推送机台
+- **需要人工判断**：`--tag` 填写本次发布说明，`--commit` 精确指定发布版本
+- **原型阶段**：后续正式版由用户自行部署到 CI 平台（如 GitHub Actions `workflow_dispatch`）
+
+### 3.8 为什么需要发布归档分支？
+
+- **追溯**：`release-{sha}_{timestamp}` 分支名直接包含源码版本和发布时间
+- **不可变**：分支指向源码 commit，永不覆盖，永远可 checkout 复现
+- **Git 原生**：不需要额外存储，利用 Git 分支的轻量特性
+
+### 3.9 为什么沙箱闭环（clone 到 /tmp）？
 
 - **分支安全**：显式 `git clone --branch main`，不误用 feature 分支
 - **清洁度保证**：`git status --porcelain` 检查

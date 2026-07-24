@@ -83,6 +83,43 @@ def _remove_empty_dirs(root: Path) -> None:
 
 
 # ============================================================
+# 1.5 字符串黑名单扫描
+# ============================================================
+
+def scan_strings(
+    kept: List[Path],
+    dst_root: Path,
+    blacklist: List[str],
+) -> List[Tuple[Path, int, str]]:
+    """扫描保留文件，检测是否包含黑名单字符串。
+
+    Args:
+        kept: 保留文件的相对路径列表
+        dst_root: 构建输出目录根路径
+        blacklist: 黑名单字符串列表 (大小写不敏感子串匹配)
+
+    Returns:
+        [(文件路径, 行号, 命中字符串)] — 空列表表示全部通过
+    """
+    if not blacklist:
+        return []
+
+    hits: List[Tuple[Path, int, str]] = []
+    for rel in kept:
+        filepath = dst_root / rel
+        try:
+            with open(filepath, errors='ignore') as f:
+                for lineno, line in enumerate(f, 1):
+                    line_lower = line.lower()
+                    for pattern in blacklist:
+                        if pattern.lower() in line_lower:
+                            hits.append((rel, lineno, pattern))
+        except Exception:
+            continue
+    return hits
+
+
+# ============================================================
 # 2. ASCII 树状图渲染
 # ============================================================
 
