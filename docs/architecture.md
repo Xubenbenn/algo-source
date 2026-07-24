@@ -27,22 +27,21 @@ graph TB
 ## 二、分支关系
 
 ```mermaid
-gitGraph TB:
+gitGraph
     commit id: "init"
-    commit id: "feat: algo"
-    commit id: "feat: test"
-    commit id: "fix: bug" tag: "v1.0.0"
-
-    branch release-abc1234_20260724
+    commit id: "feat_algo"
+    commit id: "feat_test"
+    commit id: "fix_bug" tag: "v1.0.0"
+    branch release_abc1234_20260724
     checkout main
-    commit id: "feat: v2"
+    commit id: "feat_v2"
 ```
 
 ```mermaid
-gitGraph TB:
-    commit id: "production: v1 (source=abc1234)" tag: "v1.0.0"
-    commit id: "production: v2 (source=def5678)" tag: "v1.0.1"
-    commit id: "production: v3 (source=ghi9012)" tag: "v1.0.2"
+gitGraph
+    commit id: "prod_v1" tag: "v1.0.0"
+    commit id: "prod_v2" tag: "v1.0.1"
+    commit id: "prod_v3" tag: "v1.0.2"
 ```
 
 | 仓库 | 分支 | 写权限 | 说明 |
@@ -58,7 +57,7 @@ gitGraph TB:
 sequenceDiagram
     participant Dev as 开发者
     participant Src as 开发仓 main
-    participant CI as ci_push_production.sh<br/>(沙箱 /tmp/ci_XXXXX)
+    participant CI as ci_push_production.sh (沙箱 /tmp/ci_XXXXX)
     participant Dep as 产品仓 production
     participant Arc as 开发仓 release-*
     participant Mac as 机台
