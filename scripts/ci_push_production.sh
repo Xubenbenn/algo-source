@@ -125,11 +125,11 @@ echo "  ✅ venv + pyyaml (构建依赖)"
 # 阶段 3: 两层筛选构建
 # ════════════════════════════════════════════════════════════
 echo ""
-echo "━━━ 阶段 3: 两层筛选构建 ━━━"
+echo "━━━ 阶段 3: 文件级裁剪构建 ━━━"
 
 python "${SANDBOX}/source/scripts/build_machine.py" \
     --manifest "${SANDBOX}/source/MANIFEST.yaml" \
-    -d "${SANDBOX}/output"
+    --dst "${SANDBOX}/output"
 
 MODEL_DIR="${SANDBOX}/output/model"
 if [ ! -d "$MODEL_DIR" ]; then
