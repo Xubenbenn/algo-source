@@ -113,17 +113,20 @@ jobs:
           echo "$COMMIT_SHORT" > VERSION
 
           git add model/ VERSION
-          git commit -m "production: ${TAG} (source=${COMMIT_SHORT})"
+          if git diff --cached --quiet; then
+            echo "ℹ️  无变更 (该 commit 已存在于此 production 历史中), 跳过"
+          else
+            git commit -m "production: ${TAG} (source=${COMMIT_SHORT})"
+            git pull --rebase origin production 2>/dev/null || true
+            git push --force-with-lease origin production
+            echo "✅ production 分支已推送"
 
-          git pull --rebase origin production 2>/dev/null || true
-          git push --force-with-lease origin production
-          echo "✅ production 分支已推送"
-
-          # tag
-          TAG_NAME="v${COMMIT_SHORT}_${RELEASE_DATE}"
-          git tag "$TAG_NAME" 2>/dev/null || git tag "${TAG_NAME}-$(date +%s)"
-          git push origin "$TAG_NAME" 2>/dev/null || true
-          echo "✅ tag: ${TAG_NAME}"
+            # tag
+            TAG_NAME="v${COMMIT_SHORT}_${RELEASE_DATE}"
+            git tag "$TAG_NAME" 2>/dev/null || git tag "${TAG_NAME}-$(date +%s)"
+            git push origin "$TAG_NAME" 2>/dev/null || true
+            echo "✅ tag: ${TAG_NAME}"
+          fi
 
           # 归档
           cd $GITHUB_WORKSPACE
