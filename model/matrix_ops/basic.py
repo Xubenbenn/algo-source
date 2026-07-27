@@ -92,3 +92,18 @@ def elementwise_multiply(a: ArrayLike, b: ArrayLike) -> NDArray:
         逐元素乘积
     """
     return np.multiply(np.asarray(a, dtype=np.float64), np.asarray(b, dtype=np.float64))
+
+
+def matrix_column_norm(a: ArrayLike, ord: Union[int, str] = 2) -> NDArray:
+    """逐列范数: 返回每列的范数值向量
+
+    Args:
+        a: 输入矩阵, shape (m, n)
+        ord: 范数类型 (2, 1, np.inf 等)
+
+    Returns:
+        每列范数值, shape (n,)
+    """
+    a_arr = np.asarray(a, dtype=np.float64)
+    return np.array([np.linalg.norm(a_arr[:, j], ord=ord)
+                     for j in range(a_arr.shape[1])])
