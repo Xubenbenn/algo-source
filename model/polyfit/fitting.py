@@ -7,7 +7,7 @@ from typing import Tuple
 
 def polyfit_ls(x: ArrayLike, y: ArrayLike, deg: int) -> NDArray:
     """最小二乘多项式拟合: y ≈ p[0]·x^deg + ... + p[deg]
-
+    update 0727
     Args:
         x: 自变量观测点
         y: 因变量观测值
