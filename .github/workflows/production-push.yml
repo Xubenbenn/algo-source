@@ -22,6 +22,7 @@ jobs:
       - name: 检出开发仓
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.event.inputs.commit }}
           fetch-depth: 0
 
       - name: 设置 Python
