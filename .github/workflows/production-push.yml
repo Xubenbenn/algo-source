@@ -17,6 +17,8 @@ jobs:
   push-to-production:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: write  # GITHUB_TOKEN 需要写权限 (归档分支 push 到本仓库)
 
     steps:
       - name: 检出开发仓
