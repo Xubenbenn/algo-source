@@ -29,11 +29,9 @@ jobs:
         with:
           python-version: '3.11'
 
-      - name: 安装依赖
-        run: pip install pyyaml
-
       - name: 构建裁剪源码
         run: |
+          pip install pyyaml
           python scripts/build_machine.py \
             --manifest MANIFEST.yaml \
             --dst /tmp/build_output
@@ -47,9 +45,9 @@ jobs:
           print('✅ L1 通过')
           "
 
-      - name: 安装测试依赖 + L2 逐模块导入 + L3 生产测试
+      - name: L2+L3 测试
         run: |
-          pip install pytest numpy scipy
+          pip install -r requirements.txt
           cd /tmp/build_output
           python3 -B -c "
           import sys, importlib, pathlib

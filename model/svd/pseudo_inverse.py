@@ -16,7 +16,11 @@ def pseudo_inverse(a: ArrayLike, rcond: float = 1e-15) -> NDArray:
         伪逆矩阵, shape (n, m)
     """
     a_arr = np.asarray(a, dtype=np.float64)
-    return linalg.pinv(a_arr, rcond=rcond)
+    # scipy ≥1.14 移除了 rcond 参数, 改用 rtol
+    try:
+        return linalg.pinv(a_arr, rcond=rcond)
+    except TypeError:
+        return linalg.pinv(a_arr, rtol=rcond)
 
 
 def solve_via_svd(a: ArrayLike, b: ArrayLike, rcond: float = 1e-15) -> NDArray:
