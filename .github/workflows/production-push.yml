@@ -1,0 +1,40 @@
+name: 生产推送
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit:
+        description: '要推送的 commit SHA (必须在 main 分支上)'
+        required: true
+        type: string
+      tag:
+        description: '本次发布的描述 (写入 production commit message)'
+        required: true
+        type: string
+        default: '手动发布'
+
+jobs:
+  push-to-production:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出开发仓
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # 完整历史（需要校验 commit 在 main 上）
+
+      - name: 设置 Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: 执行生产推送
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_REPO_PAT }}
+        run: |
+          bash scripts/ci_push_production.sh \
+            --commit "${{ github.event.inputs.commit }}" \
+            --tag "${{ github.event.inputs.tag }}" \
+            --local-source "${{ github.workspace }}" \
+            --deploy-token "${DEPLOY_TOKEN}"

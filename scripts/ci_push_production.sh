@@ -35,24 +35,30 @@ DEPLOY_REPO="${DEPLOY_REPO:-git@github.com:Xubenbenn/algo-deploy.git}"
 COMMIT=""
 TAG=""
 SANDBOX=""
+LOCAL_SOURCE=""
+DEPLOY_TOKEN=""  # GitHub Actions: PAT for cross-repo push
 
 # ── 参数 ──
 usage() {
-    echo "用法: $0 --commit <sha> --tag <message>"
+    echo "用法: $0 --commit <sha> --tag <message> [--local-source <path>] [--deploy-token <token>]"
     echo ""
-    echo "  --commit SHA   开发仓 main 分支上的 commit (必须已合入 main)"
-    echo "  --tag   MSG    本次发布的描述, 写入 production 的 commit message"
+    echo "  --commit SHA     开发仓 main 分支上的 commit (必须已合入 main)"
+    echo "  --tag   MSG      本次发布的描述, 写入 production 的 commit message"
+    echo "  --local-source   使用本地路径作为开发仓源码 (跳过 git clone, GA 模式)"
+    echo "  --deploy-token   产品仓推送 Token (GA 模式, 用于 HTTPS push)"
     echo ""
     echo "  环境变量:"
-    echo "    SOURCE_REPO  开发仓地址 (默认 github:Xubenbenn/algo-source)"
-    echo "    DEPLOY_REPO  产品仓地址 (默认 github:Xubenbenn/algo-deploy)"
+    echo "    SOURCE_REPO    开发仓地址"
+    echo "    DEPLOY_REPO    产品仓地址"
     exit 1
 }
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --commit) COMMIT="$2"; shift ;;
-        --tag)    TAG="$2"; shift ;;
-        --help|-h) usage ;;
+        --commit)       COMMIT="$2"; shift ;;
+        --tag)          TAG="$2"; shift ;;
+        --local-source) LOCAL_SOURCE="$2"; shift ;;
+        --deploy-token) DEPLOY_TOKEN="$2"; shift ;;
+        --help|-h)      usage ;;
         *) echo "未知参数: $1"; usage ;;
     esac
     shift
@@ -90,15 +96,26 @@ echo ""
 echo "📦 沙箱: ${SANDBOX}"
 
 # ════════════════════════════════════════════════════════════
-# 阶段 1: clone 开发仓 → checkout 指定 commit → 校验
+# 阶段 1: 准备开发仓源码
 # ════════════════════════════════════════════════════════════
 echo ""
 echo "━━━ 阶段 1: 准备源码 ━━━"
 
-# clone main（不带 --depth, 需要完整历史以 checkout 任意 commit）
-git clone --branch main \
-    "${SOURCE_REPO}" "${SANDBOX}/source" 2>&1 | tail -1
-cd "${SANDBOX}/source"
+if [ -n "$LOCAL_SOURCE" ]; then
+    # GitHub Actions 模式: 使用已 checkout 的本地代码
+    cp -r "$LOCAL_SOURCE" "${SANDBOX}/source"
+    cd "${SANDBOX}/source"
+    echo "  ✅ 本地源码 → source/ (GA 模式)"
+else
+    # 本地模式: 从远程 clone
+    git clone --branch main \
+        "${SOURCE_REPO}" "${SANDBOX}/source" 2>&1 | tail -1
+    cd "${SANDBOX}/source"
+    echo "  ✅ 开发仓 → source/"
+fi
+
+# fetch 确保 commit 存在 (本地模式可能没有)
+git fetch origin "${COMMIT}" 2>/dev/null || true
 
 # checkout 到指定 commit
 git checkout "${COMMIT}" 2>/dev/null || {
@@ -115,8 +132,15 @@ fi
 echo "  ✅ ${COMMIT_SHORT} 已合入 origin/main"
 
 # clone 产品仓（完整历史, 需要 production 分支历史做线性追加）
-git clone --branch main \
-    "${DEPLOY_REPO}" "${SANDBOX}/deploy" 2>&1 | tail -1
+if [ -n "$DEPLOY_TOKEN" ]; then
+    # GitHub Actions: 使用 token 认证的 HTTPS URL
+    DEPLOY_REPO_HTTPS=$(echo "$DEPLOY_REPO" | sed 's|git@github.com:|https://github.com/|')
+    DEPLOY_AUTH_URL=$(echo "$DEPLOY_REPO_HTTPS" | sed "s|https://|https://x-access-token:${DEPLOY_TOKEN}@|")
+    git clone --branch main "$DEPLOY_AUTH_URL" "${SANDBOX}/deploy" 2>&1 | tail -1
+else
+    git clone --branch main \
+        "${DEPLOY_REPO}" "${SANDBOX}/deploy" 2>&1 | tail -1
+fi
 echo "  ✅ 产品仓 → deploy/"
 
 # ════════════════════════════════════════════════════════════
@@ -214,7 +238,14 @@ echo ""
 echo "━━━ 阶段 5: 线性追加推送 production ━━━"
 
 cd "${SANDBOX}/deploy"
-git remote set-url origin "${DEPLOY_REPO}" 2>/dev/null || git remote add origin "${DEPLOY_REPO}"
+# 设置 remote (GA 模式使用 token URL)
+if [ -n "$DEPLOY_TOKEN" ]; then
+    DEPLOY_REPO_HTTPS=$(echo "$DEPLOY_REPO" | sed 's|git@github.com:|https://github.com/|')
+    DEPLOY_AUTH_URL=$(echo "$DEPLOY_REPO_HTTPS" | sed "s|https://|https://x-access-token:${DEPLOY_TOKEN}@|")
+    git remote set-url origin "$DEPLOY_AUTH_URL" 2>/dev/null || git remote add origin "$DEPLOY_AUTH_URL"
+else
+    git remote set-url origin "${DEPLOY_REPO}" 2>/dev/null || git remote add origin "${DEPLOY_REPO}"
+fi
 
 # 拉取远程 production 状态
 git fetch origin production 2>/dev/null || true
