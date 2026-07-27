@@ -22,19 +22,114 @@ jobs:
       - name: 检出开发仓
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0  # 完整历史（需要校验 commit 在 main 上）
+          fetch-depth: 0
 
       - name: 设置 Python
         uses: actions/setup-python@v5
         with:
           python-version: '3.11'
 
-      - name: 执行生产推送
+      - name: 安装依赖
+        run: pip install pyyaml
+
+      - name: 构建裁剪源码
+        run: |
+          python scripts/build_machine.py \
+            --manifest MANIFEST.yaml \
+            --dst /tmp/build_output
+
+      - name: L1 包级导入
+        run: |
+          cd /tmp/build_output
+          python3 -B -c "
+          import sys; sys.path.insert(0, '.')
+          import model
+          print('✅ L1 通过')
+          "
+
+      - name: 安装测试依赖 + L2 逐模块导入 + L3 生产测试
+        run: |
+          pip install pytest numpy scipy
+          cd /tmp/build_output
+          python3 -B -c "
+          import sys, importlib, pathlib
+          sys.path.insert(0, '.')
+          errors = []
+          for f in sorted(pathlib.Path('model').rglob('*.py')):
+              if f.name == '__init__.py': continue
+              mod = str(f.with_suffix('')).replace('/', '.')
+              try: importlib.import_module(mod)
+              except Exception as e: errors.append((mod, type(e).__name__))
+          if errors:
+              for m, e in errors: print(f'   ❌ {m} → {e}')
+              exit(1)
+          print(f'✅ L2 通过: {len(list(pathlib.Path(\"model\").rglob(\"*.py\")))} 个模块')
+          "
+          cd $GITHUB_WORKSPACE
+          python -m pytest tests/ -m "prod" -q --tb=short
+
+      - name: 推送到产品仓 production
         env:
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_REPO_PAT }}
         run: |
-          bash scripts/ci_push_production.sh \
-            --commit "${{ github.event.inputs.commit }}" \
-            --tag "${{ github.event.inputs.tag }}" \
-            --local-source "${{ github.workspace }}" \
-            --deploy-token "${DEPLOY_TOKEN}"
+          set -euo pipefail
+          COMMIT="${{ github.event.inputs.commit }}"
+          TAG="${{ github.event.inputs.tag }}"
+          COMMIT_SHORT=$(echo "$COMMIT" | cut -c1-7)
+          RELEASE_DATE=$(date +%Y%m%d%H%M)
+
+          # 校验 commit 在 main 上
+          if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
+            echo "❌ $COMMIT_SHORT 不在 origin/main 上"
+            exit 1
+          fi
+          echo "✅ $COMMIT_SHORT 已合入 origin/main"
+
+          # clone 产品仓并推送
+          DEPLOY_REPO="https://github.com/Xubenbenn/algo-deploy.git"
+          AUTH_URL=$(echo "$DEPLOY_REPO" | sed "s|https://|https://${DEPLOY_TOKEN}@|")
+          SANDBOX=$(mktemp -d)
+
+          git clone --branch main "$AUTH_URL" "$SANDBOX" 2>&1
+          cd "$SANDBOX"
+
+          # 切换到 production (线性追加)
+          git fetch origin production 2>/dev/null || true
+          if git rev-parse origin/production >/dev/null 2>&1; then
+            git checkout production
+            git reset --hard origin/production
+          else
+            git checkout --orphan production
+          fi
+
+          # 清空 + 拷贝裁剪源码
+          git rm -rf --cached . 2>/dev/null || true
+          find . -mindepth 1 -not -path './.git' -not -path './.git/*' -delete 2>/dev/null || true
+          cp -r /tmp/build_output/model .
+          find model/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+          echo "$COMMIT_SHORT" > VERSION
+
+          git add model/ VERSION
+          git commit -m "production: ${TAG} (source=${COMMIT_SHORT})"
+
+          git pull --rebase origin production 2>/dev/null || true
+          git push --force-with-lease origin production
+          echo "✅ production 分支已推送"
+
+          # tag
+          TAG_NAME="v${COMMIT_SHORT}_${RELEASE_DATE}"
+          git tag "$TAG_NAME" 2>/dev/null || git tag "${TAG_NAME}-$(date +%s)"
+          git push origin "$TAG_NAME" 2>/dev/null || true
+          echo "✅ tag: ${TAG_NAME}"
+
+          # 归档
+          cd $GITHUB_WORKSPACE
+          RELEASE_BRANCH="release-${COMMIT_SHORT}_${RELEASE_DATE}"
+          if ! git rev-parse "origin/${RELEASE_BRANCH}" >/dev/null 2>&1; then
+            git branch "$RELEASE_BRANCH" "$COMMIT"
+            git push origin "$RELEASE_BRANCH"
+            echo "✅ 归档分支: ${RELEASE_BRANCH}"
+          fi
+
+          rm -rf "$SANDBOX"
+          echo "✅ 推送完成"
