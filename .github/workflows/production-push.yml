@@ -84,6 +84,10 @@ jobs:
           fi
           echo "✅ $COMMIT_SHORT 已合入 origin/main"
 
+          # 配置 git 身份
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci@algo-source.bot"
+
           # clone 产品仓并推送
           DEPLOY_REPO="https://github.com/Xubenbenn/algo-deploy.git"
           AUTH_URL=$(echo "$DEPLOY_REPO" | sed "s|https://|https://${DEPLOY_TOKEN}@|")
