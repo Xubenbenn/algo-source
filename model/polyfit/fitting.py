@@ -83,3 +83,31 @@ def weighted_polyfit(
     return np.polyfit(
         np.asarray(x), np.asarray(y), deg, w=np.asarray(w)
     )
+
+
+def polyfit_ridge(
+    x: ArrayLike, y: ArrayLike, deg: int, alpha: float = 1.0
+) -> NDArray:
+    """岭回归多项式拟合: min ||Ax - y||²₂ + α||x||²₂
+
+    通过增广矩阵求解, 等价于权重衰减正则化。
+
+    Args:
+        x: 自变量观测点
+        y: 因变量观测值
+        deg: 多项式次数
+        alpha: 正则化系数 (越大 → 系数收缩越强)
+
+    Returns:
+        多项式系数 (降幂)
+    """
+    x_arr = np.asarray(x, dtype=np.float64)
+    y_arr = np.asarray(y, dtype=np.float64)
+    # 构造 Vandermonde 矩阵 (deg+1 列, 降幂)
+    a = np.vander(x_arr, deg + 1)
+    # 增广矩阵: [A; √α·I],  [y; 0]
+    n_cols = a.shape[1]
+    a_aug = np.vstack([a, np.sqrt(alpha) * np.eye(n_cols)])
+    y_aug = np.concatenate([y_arr, np.zeros(n_cols)])
+    coef, *_ = np.linalg.lstsq(a_aug, y_aug, rcond=None)
+    return coef

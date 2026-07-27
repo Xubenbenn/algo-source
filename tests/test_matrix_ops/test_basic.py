@@ -8,6 +8,7 @@ from model.matrix_ops.basic import (
     matrix_transpose,
     matrix_trace,
     matrix_norm,
+    matrix_power,
     elementwise_multiply,
 )
 
@@ -153,7 +154,41 @@ class TestElementwiseMultiply:
 
 
 # ============================================================
-# 研发环境扩展用例 (dev) — 额外覆盖
+class TestMatrixPower:
+    """矩阵幂 — 生产验证"""
+
+    @pytest.mark.prod
+    def test_square(self):
+        """A^2 = A × A"""
+        a = np.array([[1.0, 2.0], [3.0, 4.0]])
+        result = matrix_power(a, 2)
+        expected = a @ a
+        np.testing.assert_allclose(result, expected, rtol=1e-10)
+
+    @pytest.mark.prod
+    def test_identity(self):
+        """A^0 = I"""
+        a = np.array([[1.0, 2.0], [3.0, 4.0]])
+        result = matrix_power(a, 0)
+        np.testing.assert_allclose(result, np.eye(2), rtol=1e-10)
+
+    @pytest.mark.prod
+    def test_power_1(self):
+        """A^1 = A"""
+        a = np.array([[2.0, 0.0], [0.0, 3.0]])
+        result = matrix_power(a, 1)
+        np.testing.assert_allclose(result, a)
+
+    @pytest.mark.prod
+    def test_diagonal_cube(self):
+        """对角矩阵: diag(2,3)^3 = diag(8,27)"""
+        a = np.array([[2.0, 0.0], [0.0, 3.0]])
+        result = matrix_power(a, 3)
+        expected = np.array([[8.0, 0.0], [0.0, 27.0]])
+        np.testing.assert_allclose(result, expected)
+
+
+# 研发环境扩展用例 (extended) — 额外覆盖
 # ============================================================
 
 class TestMatrixMultiplyDev:

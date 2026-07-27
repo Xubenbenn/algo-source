@@ -6,6 +6,7 @@ from .fitting import (
     poly_residual,
     r2_score,
     weighted_polyfit,
+    polyfit_ridge,
 )
 from .interpolation import (
     lagrange_interp,

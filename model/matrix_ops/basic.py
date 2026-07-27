@@ -69,6 +69,19 @@ def matrix_norm(a: ArrayLike, ord: Union[str, int] = "fro") -> float:
     return float(np.linalg.norm(np.asarray(a, dtype=np.float64), ord=ord))
 
 
+def matrix_power(a: ArrayLike, n: int) -> NDArray:
+    """矩阵幂: A^n (方阵, n ≥ 0)
+
+    Args:
+        a: 方阵, shape (m, m)
+        n: 幂次, n=0 返回单位矩阵
+
+    Returns:
+        A^n
+    """
+    return np.linalg.matrix_power(np.asarray(a, dtype=np.float64), n)
+
+
 def elementwise_multiply(a: ArrayLike, b: ArrayLike) -> NDArray:
     """逐元素乘法 (Hadamard 积): C[i,j] = A[i,j] × B[i,j]
 

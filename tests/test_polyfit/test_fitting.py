@@ -8,6 +8,7 @@ from model.polyfit.fitting import (
     poly_residual,
     r2_score,
     weighted_polyfit,
+    polyfit_ridge,
 )
 
 
@@ -131,6 +132,35 @@ class TestWeightedPolyfit:
 
 
 # ============================================================
+class TestPolyfitRidge:
+    """岭回归拟合 — 生产验证"""
+
+    @pytest.mark.prod
+    def test_exact_linear(self):
+        """精确线性岭回归"""
+        x = np.array([0.0, 1.0, 2.0, 3.0])
+        y = 2.0 * x + 1.0
+        p = polyfit_ridge(x, y, 1, alpha=0.01)
+        np.testing.assert_allclose(p, [2.0, 1.0], rtol=0.1)
+
+    @pytest.mark.prod
+    def test_large_alpha_shrinks(self):
+        """大 α 使系数趋近 0"""
+        x = np.linspace(0, 10, 30)
+        y = 2.0 * x**2 - x + 3.0
+        p_reg = polyfit_ridge(x, y, 2, alpha=1e6)
+        assert np.linalg.norm(p_reg) < 1.0
+
+    @pytest.mark.prod
+    def test_zero_alpha_equals_lstsq(self):
+        """α=0 等价于普通最小二乘"""
+        x = np.linspace(0, 5, 20)
+        y = 1.5 * x + 2.0 + np.random.default_rng(42).normal(0, 0.1, 20)
+        p_ridge = polyfit_ridge(x, y, 1, alpha=0.0)
+        p_ls = polyfit_ls(x, y, 1)
+        np.testing.assert_allclose(p_ridge, p_ls, rtol=1e-10)
+
+
 # 研发扩展用例
 # ============================================================
 

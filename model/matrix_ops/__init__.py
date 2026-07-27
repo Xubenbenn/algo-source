@@ -6,6 +6,7 @@ from .basic import (
     matrix_transpose,
     matrix_trace,
     matrix_norm,
+    matrix_power,
     elementwise_multiply,
 )
 from .decomposition import (
