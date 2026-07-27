@@ -132,16 +132,26 @@ fi
 echo "  ✅ ${COMMIT_SHORT} 已合入 origin/main"
 
 # clone 产品仓（完整历史, 需要 production 分支历史做线性追加）
-if [ -n "$DEPLOY_TOKEN" ]; then
-    # GitHub Actions: 使用 token 认证的 HTTPS URL
+IS_GITHUB_ACTIONS="${GITHUB_ACTIONS:-false}"
+
+if [ "$IS_GITHUB_ACTIONS" = "true" ] || [ -n "$DEPLOY_TOKEN" ]; then
+    # GitHub Actions / Token 模式: 使用 HTTPS + Token 认证
+    if [ -z "$DEPLOY_TOKEN" ]; then
+        echo "❌ GA 模式下 DEPLOY_TOKEN 为空"
+        echo "   请在 algo-source → Settings → Secrets → Actions 中"
+        echo "   添加 DEPLOY_REPO_PAT (algo-deploy 仓库的 Contents R/W PAT)"
+        exit 1
+    fi
     DEPLOY_REPO_HTTPS=$(echo "$DEPLOY_REPO" | sed 's|git@github.com:|https://github.com/|')
     DEPLOY_AUTH_URL=$(echo "$DEPLOY_REPO_HTTPS" | sed "s|https://|https://${DEPLOY_TOKEN}@|")
+    echo "  (HTTPS + Token 认证)"
     git clone --branch main "$DEPLOY_AUTH_URL" "${SANDBOX}/deploy" 2>&1
 else
+    # 本地模式: 使用 SSH
     git clone --branch main \
         "${DEPLOY_REPO}" "${SANDBOX}/deploy" 2>&1
 fi
-# 验证 clone 成功 (之前 2>&1|tail 会吞掉错误)
+# 验证 clone 成功
 if [ ! -d "${SANDBOX}/deploy/.git" ]; then
     echo "❌ 产品仓 clone 失败"
     exit 1
@@ -243,8 +253,8 @@ echo ""
 echo "━━━ 阶段 5: 线性追加推送 production ━━━"
 
 cd "${SANDBOX}/deploy"
-# 设置 remote (GA 模式使用 token URL)
-if [ -n "$DEPLOY_TOKEN" ]; then
+# 设置 remote (与 clone 使用相同的认证方式)
+if [ "$IS_GITHUB_ACTIONS" = "true" ] || [ -n "$DEPLOY_TOKEN" ]; then
     DEPLOY_REPO_HTTPS=$(echo "$DEPLOY_REPO" | sed 's|git@github.com:|https://github.com/|')
     DEPLOY_AUTH_URL=$(echo "$DEPLOY_REPO_HTTPS" | sed "s|https://|https://${DEPLOY_TOKEN}@|")
     git remote set-url origin "$DEPLOY_AUTH_URL" 2>/dev/null || git remote add origin "$DEPLOY_AUTH_URL"
