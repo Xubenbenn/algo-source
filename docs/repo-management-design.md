@@ -11,33 +11,33 @@
 ```mermaid
 graph TB
     subgraph 开发仓["开发仓 algo-source"]
-        S_main["main<br/>全量算法 + 测试 + 构建脚本 + MANIFEST"]
+        S_master["master<br/>全量算法 + 测试 + 构建脚本 + MANIFEST"]
         S_release["release-{sha}_{ts}<br/>发布归档分支"]
     end
 
     subgraph 产品仓["产品仓 algo-deploy"]
-        D_main["main<br/>adapters + tests + config + model/"]
+        D_master["master<br/>adapters + tests + config + model/"]
         D_prod["production<br/>model/ 裁剪源码 + VERSION"]
     end
 
-    S_main -->|"手动触发<br/>GA workflow_dispatch"| D_prod
-    S_main -.->|"推送成功后自动创建"| S_release
-    D_prod -.->|"sync/model-{sha} 分支<br/>人工 PR 合入"| D_main
+    S_master -->|"手动触发<br/>GA workflow_dispatch"| D_prod
+    S_master -.->|"推送成功后自动创建"| S_release
+    D_prod -.->|"sync/model-{sha} 分支<br/>人工 PR 合入"| D_master
 ```
 
 ## 二、仓库与分支
 
 | 仓库 | 分支 | 内容 | 写权限 | 维护方式 |
 |------|------|------|:---:|------|
-| **algo-source** | `main` | 全量算法、测试、构建脚本、MANIFEST | 人工 PR | 日常开发 |
+| **algo-source** | `master` | 全量算法、测试、构建脚本、MANIFEST | 人工 PR | 日常开发 |
 | | `release-{sha}_{ts}` | 归档分支（指向源码 commit） | CI 自动 | 只读，永不删除 |
-| **algo-deploy** | `main` | adapters + tests + config + deploy.sh + **model/** | 人工 PR | model/ 来自 sync 分支 PR |
+| **algo-deploy** | `master` | adapters + tests + config + deploy.sh + **model/** | 人工 PR | model/ 来自 sync 分支 PR |
 | | `production` | model/ 裁剪源码 + VERSION | CI 线性追加 | 孤儿分支，独立演进 |
 
 ### 分区模型（核心设计）
 
 ```
-algo-deploy main 的文件集:
+algo-deploy master 的文件集:
   {model/} ← 来自 production (通过 sync/model-* PR 人工合入)
   {adapters/, tests/, config/, deploy.sh, ...} ← 来自人工 PR
 
@@ -81,17 +81,17 @@ GitHub Actions `workflow_dispatch` 手动触发：
 
 - 首次推送创建孤儿分支，后续线性追加
 - 每次推送：`git pull --rebase` + `git push --force-with-lease`
-- 历史始终为单链，与开发仓 main 的非线性历史无关
+- 历史始终为单链，与开发仓 master 的非线性历史无关
 
-## 六、main 同步
+## 六、master 同步
 
 ```
 CI 推送 production 后:
-  ① git checkout main
+  ① git checkout master
   ② git checkout production -- model/    # 只替换 model/
   ③ git checkout -b sync/model-{sha}
   ④ git commit + push
-  ⑤ 人工创建 PR → Review → Merge 到 main
+  ⑤ 人工创建 PR → Review → Merge 到 master
 ```
 
 ---
