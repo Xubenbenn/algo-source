@@ -139,5 +139,24 @@ jobs:
             echo "✅ 归档分支: ${RELEASE_BRANCH}"
           fi
 
+          # 同步 model/ → main (main 的 model/ 始终等于 production)
+          echo ""
+          echo "━━━ 同步 main 分支 ━━━"
+          git checkout main
+          git pull origin main 2>/dev/null || true
+          # 从 production commit 检出 model/
+          git checkout "$(git rev-parse production)" -- model/
+          # 只有 model/ 变更时才提交 (避免空提交)
+          if git diff --quiet && git diff --cached --quiet; then
+            echo "  ℹ️  main 的 model/ 已是最新, 跳过"
+          else
+            git commit -m "sync: model/ ← production (source=${COMMIT_SHORT})"
+            git push origin main 2>&1 || {
+              echo "  ⚠️  main push 被拒绝 (可能需要 branch protection 白名单)"
+              echo "  手动 PR: https://github.com/Xubenbenn/algo-deploy/pull/new/sync-model-${COMMIT_SHORT}"
+            }
+            echo "  ✅ main 已同步"
+          fi
+
           rm -rf "$SANDBOX"
           echo "✅ 推送完成"
