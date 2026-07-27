@@ -5,6 +5,7 @@ from .decompose import (
     svd_economy,
     singular_values,
     svd_rank,
+    svd_reconstruct,
 )
 from .pseudo_inverse import (
     pseudo_inverse,

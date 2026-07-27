@@ -7,6 +7,7 @@ from model.svd.decompose import (
     svd_economy,
     singular_values,
     svd_rank,
+    svd_reconstruct,
 )
 
 
@@ -90,6 +91,26 @@ class TestSingularValues:
         """零矩阵奇异值全为零"""
         s = singular_values(np.zeros((3, 3)))
         assert np.all(s < 1e-12)
+
+
+class TestSVDReconstruct:
+    """SVD 重构 — 生产验证"""
+
+    @pytest.mark.prod
+    def test_reconstruct_square(self, random_matrix):
+        """A = U Σ V^T"""
+        a = random_matrix(4, 4)
+        u, s, vt = svd_full(a)
+        result = svd_reconstruct(u, s, vt)
+        np.testing.assert_allclose(result, a, rtol=1e-10)
+
+    @pytest.mark.prod
+    def test_reconstruct_economy(self, random_matrix):
+        """经济型重构"""
+        a = random_matrix(5, 3)
+        u, s, vt = svd_economy(a)
+        result = svd_reconstruct(u, s, vt)
+        np.testing.assert_allclose(result, a, rtol=1e-10)
 
 
 class TestSVDRank:

@@ -47,6 +47,20 @@ def singular_values(a: ArrayLike) -> NDArray:
     return linalg.svdvals(a_arr)
 
 
+def svd_reconstruct(u: NDArray, s: NDArray, vt: NDArray) -> NDArray:
+    """从 SVD 分量重构原始矩阵: A = U Σ V^T
+
+    Args:
+        u: 左奇异向量, shape (m, k)
+        s: 奇异值向量, shape (k,)
+        vt: 右奇异向量转置, shape (k, n)
+
+    Returns:
+        重构矩阵, shape (m, n)
+    """
+    return np.dot(u * s, vt)
+
+
 def svd_rank(a: ArrayLike, tol: float = 1e-10) -> int:
     """通过 SVD 计算矩阵的数值秩
 
