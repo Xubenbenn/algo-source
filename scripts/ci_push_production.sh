@@ -135,11 +135,16 @@ echo "  ✅ ${COMMIT_SHORT} 已合入 origin/main"
 if [ -n "$DEPLOY_TOKEN" ]; then
     # GitHub Actions: 使用 token 认证的 HTTPS URL
     DEPLOY_REPO_HTTPS=$(echo "$DEPLOY_REPO" | sed 's|git@github.com:|https://github.com/|')
-    DEPLOY_AUTH_URL=$(echo "$DEPLOY_REPO_HTTPS" | sed "s|https://|https://x-access-token:${DEPLOY_TOKEN}@|")
-    git clone --branch main "$DEPLOY_AUTH_URL" "${SANDBOX}/deploy" 2>&1 | tail -1
+    DEPLOY_AUTH_URL=$(echo "$DEPLOY_REPO_HTTPS" | sed "s|https://|https://${DEPLOY_TOKEN}@|")
+    git clone --branch main "$DEPLOY_AUTH_URL" "${SANDBOX}/deploy" 2>&1
 else
     git clone --branch main \
-        "${DEPLOY_REPO}" "${SANDBOX}/deploy" 2>&1 | tail -1
+        "${DEPLOY_REPO}" "${SANDBOX}/deploy" 2>&1
+fi
+# 验证 clone 成功 (之前 2>&1|tail 会吞掉错误)
+if [ ! -d "${SANDBOX}/deploy/.git" ]; then
+    echo "❌ 产品仓 clone 失败"
+    exit 1
 fi
 echo "  ✅ 产品仓 → deploy/"
 
@@ -241,7 +246,7 @@ cd "${SANDBOX}/deploy"
 # 设置 remote (GA 模式使用 token URL)
 if [ -n "$DEPLOY_TOKEN" ]; then
     DEPLOY_REPO_HTTPS=$(echo "$DEPLOY_REPO" | sed 's|git@github.com:|https://github.com/|')
-    DEPLOY_AUTH_URL=$(echo "$DEPLOY_REPO_HTTPS" | sed "s|https://|https://x-access-token:${DEPLOY_TOKEN}@|")
+    DEPLOY_AUTH_URL=$(echo "$DEPLOY_REPO_HTTPS" | sed "s|https://|https://${DEPLOY_TOKEN}@|")
     git remote set-url origin "$DEPLOY_AUTH_URL" 2>/dev/null || git remote add origin "$DEPLOY_AUTH_URL"
 else
     git remote set-url origin "${DEPLOY_REPO}" 2>/dev/null || git remote add origin "${DEPLOY_REPO}"
