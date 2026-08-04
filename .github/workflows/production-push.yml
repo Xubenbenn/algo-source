@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       commit:
-        description: '要推送的 commit SHA (必须在 main 分支上)'
+        description: '要发布的 commit SHA (必须在 master 分支上)'
         required: true
         type: string
       tag:
@@ -14,11 +14,19 @@ on:
         default: '手动发布'
 
 jobs:
-  push-to-production:
+  # ═══════════════════════════════════════════════════════════
+  # Job 1: 裁剪 + 校验 + 生成 release/{sha} 孤儿分支 (唯一裁剪点)
+  # release 分支 = 可测试的全量待发布代码 + MANIFEST 快照 + 裁剪日志
+  # ═══════════════════════════════════════════════════════════
+  build-and-release:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write  # GITHUB_TOKEN 需要写权限 (归档分支 push 到本仓库)
+      contents: write  # 推送 release 分支到开发仓
+
+    outputs:
+      commit_short: ${{ steps.release.outputs.commit_short }}
+      release_branch: ${{ steps.release.outputs.release_branch }}
 
     steps:
       - name: 检出开发仓
@@ -32,12 +40,22 @@ jobs:
         with:
           python-version: '3.11'
 
+      - name: 校验 commit 在 master 上
+        run: |
+          COMMIT="${{ github.event.inputs.commit }}"
+          if ! git merge-base --is-ancestor "$COMMIT" origin/master; then
+            echo "❌ $(echo $COMMIT | cut -c1-7) 不在 origin/master 上"
+            exit 1
+          fi
+          echo "✅ $(echo $COMMIT | cut -c1-7) 已合入 origin/master"
+
       - name: 构建裁剪源码
         run: |
           pip install pyyaml
           python scripts/build_machine.py \
             --manifest MANIFEST.yaml \
-            --dst /tmp/build_output
+            --dst /tmp/build_output > /tmp/build_report.txt 2>&1
+          cat /tmp/build_report.txt
 
       - name: L1 包级导入
         run: |
@@ -69,7 +87,8 @@ jobs:
           cd $GITHUB_WORKSPACE
           python -m pytest tests/ -m "prod" -q --tb=short
 
-      - name: 推送到产品仓 production
+      - name: 生成 release/{sha} 分支
+        id: release
         env:
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_REPO_PAT }}
         run: |
@@ -78,23 +97,78 @@ jobs:
           TAG="${{ github.event.inputs.tag }}"
           COMMIT_SHORT=$(echo "$COMMIT" | cut -c1-7)
           RELEASE_DATE=$(date +%Y%m%d%H%M)
-
-          # 校验 commit 在 main 上
-          if ! git merge-base --is-ancestor "$COMMIT" origin/main; then
-            echo "❌ $COMMIT_SHORT 不在 origin/main 上"
-            exit 1
-          fi
-          echo "✅ $COMMIT_SHORT 已合入 origin/main"
+          RELEASE_BRANCH="release/${COMMIT_SHORT}"
 
           # 配置 git 身份
           git config --global user.name "CI Bot"
           git config --global user.email "ci@algo-source.bot"
 
-          # clone 产品仓并推送
+          echo "commit_short=${COMMIT_SHORT}" >> $GITHUB_OUTPUT
+          echo "release_branch=${RELEASE_BRANCH}" >> $GITHUB_OUTPUT
+
+          # 创建孤儿分支 (每次强制重建 → 分支内容 = 当前 commit + 当前 MANIFEST)
+          git checkout --orphan "$RELEASE_BRANCH" 2>/dev/null || git checkout -B "$RELEASE_BRANCH"
+          git rm -rf --cached . 2>/dev/null || true
+          find . -mindepth 1 -not -path './.git' -not -path './.git/*' -delete 2>/dev/null || true
+
+          # release 分支内容: 裁剪产物 + MANIFEST 快照 + 裁剪日志 + VERSION
+          cp -r /tmp/build_output/model .
+          find model/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+          cp MANIFEST.yaml MANIFEST.snapshot.yaml 2>/dev/null || true
+          cp /tmp/build_report.txt BUILD_REPORT.txt
+          cat > VERSION << EOF
+          source_commit: ${COMMIT}
+          release_date: ${RELEASE_DATE}
+          tag: ${TAG}
+          EOF
+
+          git add model/ MANIFEST.snapshot.yaml BUILD_REPORT.txt VERSION
+          git commit -m "release: ${TAG} (source=${COMMIT_SHORT})"
+          git push --force origin "$RELEASE_BRANCH"
+          echo "✅ release 分支: ${RELEASE_BRANCH}"
+
+      - name: 上传裁剪产物 (供 publish job)
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: /tmp/build_output/
+          retention-days: 1
+
+  # ═══════════════════════════════════════════════════════════
+  # Job 2: 发布 — 从 release/{sha} 全量同步到产品仓 production (不裁剪)
+  # ═══════════════════════════════════════════════════════════
+  publish:
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write  # sync 分支 push 到产品仓由 PAT 负责
+
+    steps:
+      - name: 下载裁剪产物
+        uses: actions/download-artifact@v4
+        with:
+          name: build-output
+          path: /tmp/build_output
+
+      - name: 推送到产品仓 production (全量同步, 不裁剪)
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_REPO_PAT }}
+        run: |
+          set -euo pipefail
+          COMMIT="${{ github.event.inputs.commit }}"
+          TAG="${{ github.event.inputs.tag }}"
+          COMMIT_SHORT="${{ needs.build-and-release.outputs.commit_short }}"
+          RELEASE_DATE=$(date +%Y%m%d%H%M)
+
+          # 配置 git 身份
+          git config --global user.name "CI Bot"
+          git config --global user.email "ci@algo-source.bot"
+
+          # clone 产品仓
           DEPLOY_REPO="https://github.com/Xubenbenn/algo-deploy.git"
           AUTH_URL=$(echo "$DEPLOY_REPO" | sed "s|https://|https://${DEPLOY_TOKEN}@|")
           SANDBOX=$(mktemp -d)
-
           git clone --branch main "$AUTH_URL" "$SANDBOX" 2>&1
           cd "$SANDBOX"
 
@@ -107,7 +181,7 @@ jobs:
             git checkout --orphan production
           fi
 
-          # 清空 + 拷贝裁剪源码
+          # 清空 + 全量同步裁剪产物 (来自 release 分支构建结果, 此处不裁剪)
           git rm -rf --cached . 2>/dev/null || true
           find . -mindepth 1 -not -path './.git' -not -path './.git/*' -delete 2>/dev/null || true
           cp -r /tmp/build_output/model .
@@ -130,26 +204,16 @@ jobs:
             echo "✅ tag: ${TAG_NAME}"
           fi
 
-          # 归档
-          cd $GITHUB_WORKSPACE
-          RELEASE_BRANCH="release-${COMMIT_SHORT}_${RELEASE_DATE}"
-          if ! git rev-parse "origin/${RELEASE_BRANCH}" >/dev/null 2>&1; then
-            git branch "$RELEASE_BRANCH" "$COMMIT"
-            git push origin "$RELEASE_BRANCH"
-            echo "✅ 归档分支: ${RELEASE_BRANCH}"
-          fi
-
-          # 创建同步分支 (人工 PR 合入 main)
+          # 创建同步分支 (人工 PR 合入 master)
           echo ""
-          echo "━━━ 创建 main 同步分支 ━━━"
+          echo "━━━ 创建 master 同步分支 ━━━"
           SYNC_BRANCH="sync/model-${COMMIT_SHORT}"
-          git checkout main
-          git pull origin main 2>/dev/null || true
+          git checkout master
+          git pull origin master 2>/dev/null || true
           git checkout -b "$SYNC_BRANCH"
-          # 从 production commit 检出 model/
           git checkout "$(git rev-parse production)" -- model/
           if git diff --quiet && git diff --cached --quiet; then
-            echo "  ℹ️  main 的 model/ 已是最新, 跳过"
+            echo "  ℹ️  master 的 model/ 已是最新, 跳过"
           else
             git commit -m "sync: model/ ← production (source=${COMMIT_SHORT})"
             git push origin "$SYNC_BRANCH" 2>&1
@@ -158,4 +222,4 @@ jobs:
           fi
 
           rm -rf "$SANDBOX"
-          echo "✅ 推送完成"
+          echo "✅ 发布完成"
