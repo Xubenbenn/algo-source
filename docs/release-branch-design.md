@@ -98,15 +98,15 @@ cp 裁剪产物 → git add → git commit          # 全量快照
 
 ### 机制 3: 血缘透传
 
-commit message + VERSION 文件强制携带：
+commit message + VERSION 文件强制携带（详见 §8.3 完整格式）：
 
 ```
 VERSION:
-  source_commit: 9cd93a5     ← master SHA (血缘根)
-  manifest_hash: abc123      ← MANIFEST 快照哈希
-  content_hash:  x1y2z3      ← 裁剪产物内容哈希
-  release_date:  20260804
-  tag:           V3.0: xxx
+  semver:        v1.1.0     ← 对外版本 (产品仓 tag)
+  release_tag:   v3         ← 内部发布序号 (开发仓 tag)
+  source_commit: 9cd93a5    ← master SHA (血缘根)
+  manifest_hash: abc123     ← MANIFEST 快照哈希
+  content_hash:  x1y2z3     ← 裁剪产物内容哈希
 ```
 
 **为什么**: 真正的血缘记录在裁剪日志中，不在 git 拓扑里。同 commit 重新裁剪（MANIFEST 演进）会得到不同的树，旧版本不可复现——VERSION 中的三元组是唯一自包含的"当时实际发布内容"记录。
@@ -159,9 +159,64 @@ python -m pytest tests/ -m "prod"  # 或直接跑机台模拟
 # 从 release 历史找旧 tag → checkout release/v0.9 -- model/ → 同步 production
 ```
 
-## 八、待确认事项
+## 八、决策记录
 
-- [ ] release 分支是否需要 GitHub 分支保护（禁止人工 push，仅 CI Bot）
-- [ ] release/v{N} 的 N 由谁递增（流水线自动读 release 分支 commit 数）
-- [ ] 产品仓 tag 命名与 release/v{N} 的对应关系（v{sha}_{ts} vs release/v{N} 是否统一）
-- [ ] 是否需要将 MANIFEST.snapshot + BUILD_REPORT 随发布同步进产品仓（可审计性贯通）
+### 8.1 分支保护
+
+**✅ 已确认: release 分支启用 GitHub 分支保护，仅允许 CI Bot 推送。**
+
+```
+algo-source → Settings → Branches → release 分支保护规则:
+  - 仅允许 CI Bot (PAT) 推送
+  - 禁止人工 push (Require pull request reviewing 不适用, 直接 deny push)
+```
+
+### 8.2 release/v{N} 递增方式
+
+**✅ 已确认: N 由构建参数控制（workflow_dispatch 输入）。**
+
+```
+Actions → 生产推送 → 输入:
+  commit:    (必填)
+  tag:       (必填, 发布描述)
+  release_n: (可选, 默认自动 = release 分支 commit 数 + 1)
+```
+
+流水线读取 release 分支 commit 数作为默认值，构建参数可覆盖（用于回补/重发场景）。
+
+### 8.3 产品仓版本与 release 的对应关系
+
+**✅ 已确认: 职责分离 + VERSION 文件记录映射。**
+
+```
+开发仓 release 分支:  release/v1, release/v2, release/v3   ← 内部发布序号
+产品仓 production:    v1.0.0, v1.1.0, v1.2.0              ← 对外语义版本
+
+对应关系记录在随发布同步的 VERSION 文件中 (唯一映射真相):
+  VERSION:
+    semver:        v1.1.0          ← 对外版本 (产品仓 tag)
+    release_tag:   v3              ← 内部发布序号 (开发仓 tag)
+    source_commit: 9cd93a5         ← master SHA (血缘根)
+    manifest_hash: abc123          ← MANIFEST 快照哈希
+    content_hash:  x1y2z3          ← 裁剪产物内容哈希
+    release_date:  20260804
+    tag:           V1.1: 新增 xxx  ← 发布描述
+```
+
+**理由**: tag 名是脆弱的编码渠道（改名即断链）；VERSION 随产物透传、机器可读，是唯一映射真相。双向回退可定位：机台事故说 "v1.0.0" → VERSION 查到 release/v1 → 开发仓溯源。
+
+### 8.4 MANIFEST 快照记录
+
+**✅ 已确认: 产品仓同步 MANIFEST.snapshot.yaml，树状图留开发仓。**
+
+```
+production 分支内容 (每次发布同步):
+  model/                      ← 裁剪产物
+  VERSION                     ← 血缘 + 映射 (见 8.3)
+  MANIFEST.snapshot.yaml      ← 规则快照 (随产物, 机器可审计)
+
+BUILD_REPORT.txt (树状图) 留在开发仓 release 分支:
+  → 通过 VERSION.release_tag 反查, 不冗余同步
+```
+
+**理由**: 审计链贯通——任何人拿到产品仓 production 即可自证"用什么规则裁剪、哪些文件被排除"；快照仅几 KB 随产物同步无负担；树状图较大且仅在审查时需要，反查即可。
