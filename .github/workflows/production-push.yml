@@ -4,29 +4,36 @@ on:
   workflow_dispatch:
     inputs:
       commit:
-        description: '要发布的 commit SHA (必须在 master 分支上)'
+        description: '要发布的 master commit SHA'
+        required: true
+        type: string
+      semver:
+        description: '对外版本号 (如 v1.2.0, 写入 VERSION + 产品仓 tag)'
         required: true
         type: string
       tag:
-        description: '本次发布的描述 (写入 production commit message)'
+        description: '发布描述 (commit message)'
         required: true
         type: string
         default: '手动发布'
+      version_id:
+        description: '发布序号元数据 (仅记录到 VERSION, 不影响寻址)'
+        required: false
+        type: string
 
 jobs:
   # ═══════════════════════════════════════════════════════════
-  # Job 1: 裁剪 + 校验 + 生成 release/{sha} 孤儿分支 (唯一裁剪点)
-  # release 分支 = 可测试的全量待发布代码 + MANIFEST 快照 + 裁剪日志
+  # Job 1: 裁剪 + 校验 + release 分支线性追加 (唯一裁剪点)
   # ═══════════════════════════════════════════════════════════
   build-and-release:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write  # 推送 release 分支到开发仓
+      contents: write  # 推送 release 分支 + tag 到开发仓
 
     outputs:
-      commit_short: ${{ steps.release.outputs.commit_short }}
-      release_branch: ${{ steps.release.outputs.release_branch }}
+      release_tag: ${{ steps.release.outputs.release_tag }}
+      content_hash: ${{ steps.release.outputs.content_hash }}
 
     steps:
       - name: 检出开发仓
@@ -87,45 +94,94 @@ jobs:
           cd $GITHUB_WORKSPACE
           python -m pytest tests/ -m "prod" -q --tb=short
 
-      - name: 生成 release/{sha} 分支
+      - name: 计算 content_hash (校验基准)
+        id: hash
+        run: |
+          cd /tmp/build_output
+          # model/ 树哈希: 排除 BUILD_REPORT 等非确定性文件
+          HASH=$(find model -type f -exec sha256sum {} + | sort -k2 | sha256sum | cut -d' ' -f1)
+          echo "content_hash=${HASH}" >> $GITHUB_OUTPUT
+          echo "content_hash: ${HASH}"
+
+      - name: 生成 release 分支 commit (永远线性追加)
         id: release
-        env:
-          DEPLOY_TOKEN: ${{ secrets.DEPLOY_REPO_PAT }}
         run: |
           set -euo pipefail
           COMMIT="${{ github.event.inputs.commit }}"
+          SEMVER="${{ github.event.inputs.semver }}"
           TAG="${{ github.event.inputs.tag }}"
+          VERSION_ID="${{ github.event.inputs.version_id }}"
           COMMIT_SHORT=$(echo "$COMMIT" | cut -c1-7)
           RELEASE_DATE=$(date +%Y%m%d%H%M)
-          RELEASE_BRANCH="release/${COMMIT_SHORT}"
+          CONTENT_HASH="${{ steps.hash.outputs.content_hash }}"
+
+          # MANIFEST 快照哈希
+          MANIFEST_HASH=$(sha256sum MANIFEST.yaml | cut -d' ' -f1)
 
           # 配置 git 身份
           git config --global user.name "CI Bot"
           git config --global user.email "ci@algo-source.bot"
 
-          echo "commit_short=${COMMIT_SHORT}" >> $GITHUB_OUTPUT
-          echo "release_branch=${RELEASE_BRANCH}" >> $GITHUB_OUTPUT
+          # 对齐 release 分支 (首次创建, 后续线性追加)
+          git fetch origin release 2>/dev/null || true
+          if git rev-parse origin/release >/dev/null 2>&1; then
+            git checkout release
+            git reset --hard origin/release
+          else
+            git checkout --orphan release
+            git rm -rf --cached . 2>/dev/null || true
+            find . -mindepth 1 -not -path './.git' -not -path './.git/*' -delete 2>/dev/null || true
+          fi
 
-          # 创建孤儿分支 (每次强制重建 → 分支内容 = 当前 commit + 当前 MANIFEST)
-          git checkout --orphan "$RELEASE_BRANCH" 2>/dev/null || git checkout -B "$RELEASE_BRANCH"
+          # 空树重建: 清空工作树 (机制2)
           git rm -rf --cached . 2>/dev/null || true
           find . -mindepth 1 -not -path './.git' -not -path './.git/*' -delete 2>/dev/null || true
 
           # release 分支内容: 裁剪产物 + MANIFEST 快照 + 裁剪日志 + VERSION
           cp -r /tmp/build_output/model .
           find model/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-          cp MANIFEST.yaml MANIFEST.snapshot.yaml 2>/dev/null || true
+          cp MANIFEST.yaml MANIFEST.snapshot.yaml
           cp /tmp/build_report.txt BUILD_REPORT.txt
           cat > VERSION << EOF
+          semver: ${SEMVER}
+          version_id: ${VERSION_ID:-""}
+          release_tag: (auto)
           source_commit: ${COMMIT}
+          manifest_hash: ${MANIFEST_HASH}
+          content_hash: ${CONTENT_HASH}
           release_date: ${RELEASE_DATE}
           tag: ${TAG}
           EOF
 
           git add model/ MANIFEST.snapshot.yaml BUILD_REPORT.txt VERSION
-          git commit -m "release: ${TAG} (source=${COMMIT_SHORT})"
-          git push --force origin "$RELEASE_BRANCH"
-          echo "✅ release 分支: ${RELEASE_BRANCH}"
+          git commit -m "release: ${SEMVER} (source=${COMMIT_SHORT}, manifest=${MANIFEST_HASH:0:7}, content=${CONTENT_HASH:0:7})"
+
+          # 普通 push (永不 force): push 被拒 = 失败终止
+          git push origin release
+          echo "✅ release 分支已线性追加"
+
+          # 打发布身份 tag: release/v{N} = 上次序号 + 1 (自动递增)
+          LAST_TAG=$(git ls-remote --tags origin "release/v*" | sed 's/.*release\/v//' | sort -n | tail -1)
+          if [ -z "$LAST_TAG" ]; then
+            NEXT_N=1
+          else
+            NEXT_N=$((LAST_TAG + 1))
+          fi
+          RELEASE_TAG="release/v${NEXT_N}"
+          git tag "$RELEASE_TAG"
+          git push origin "$RELEASE_TAG"
+          echo "release_tag=${RELEASE_TAG}" >> $GITHUB_OUTPUT
+
+          # 回写 VERSION 中的 release_tag (release 分支 + build_output 双写)
+          sed -i "s/release_tag: (auto)/release_tag: ${RELEASE_TAG}/" VERSION
+          git add VERSION
+          git commit -m "release: ${SEMVER} (release_tag=${RELEASE_TAG})"
+          git push origin release
+          echo "✅ ${RELEASE_TAG} 已打 tag"
+
+          # 同步 VERSION + MANIFEST 快照到 build_output (供 publish job 使用)
+          cp VERSION MANIFEST.snapshot.yaml /tmp/build_output/
+          echo "✅ 元数据已同步到 build_output"
 
       - name: 上传裁剪产物 (供 publish job)
         uses: actions/upload-artifact@v4
@@ -135,14 +191,12 @@ jobs:
           retention-days: 1
 
   # ═══════════════════════════════════════════════════════════
-  # Job 2: 发布 — 从 release/{sha} 全量同步到产品仓 production (不裁剪)
+  # Job 2: 发布 — 按 release/v{N} 全量同步到产品仓 (不裁剪)
   # ═══════════════════════════════════════════════════════════
   publish:
     needs: build-and-release
     runs-on: ubuntu-latest
     timeout-minutes: 15
-    permissions:
-      contents: write  # sync 分支 push 到产品仓由 PAT 负责
 
     steps:
       - name: 下载裁剪产物
@@ -151,15 +205,17 @@ jobs:
           name: build-output
           path: /tmp/build_output
 
-      - name: 推送到产品仓 production (全量同步, 不裁剪)
+      - name: 推送到产品仓 production (按 release/v{N} 寻址, 不裁剪)
         env:
           DEPLOY_TOKEN: ${{ secrets.DEPLOY_REPO_PAT }}
         run: |
           set -euo pipefail
           COMMIT="${{ github.event.inputs.commit }}"
+          SEMVER="${{ github.event.inputs.semver }}"
           TAG="${{ github.event.inputs.tag }}"
-          COMMIT_SHORT="${{ needs.build-and-release.outputs.commit_short }}"
+          COMMIT_SHORT=$(echo "$COMMIT" | cut -c1-7)
           RELEASE_DATE=$(date +%Y%m%d%H%M)
+          RELEASE_TAG="${{ needs.build-and-release.outputs.release_tag }}"
 
           # 配置 git 身份
           git config --global user.name "CI Bot"
@@ -169,7 +225,7 @@ jobs:
           DEPLOY_REPO="https://github.com/Xubenbenn/algo-deploy.git"
           AUTH_URL=$(echo "$DEPLOY_REPO" | sed "s|https://|https://${DEPLOY_TOKEN}@|")
           SANDBOX=$(mktemp -d)
-          git clone --branch main "$AUTH_URL" "$SANDBOX" 2>&1
+          git clone --branch master "$AUTH_URL" "$SANDBOX" 2>&1
           cd "$SANDBOX"
 
           # 切换到 production (线性追加)
@@ -181,41 +237,42 @@ jobs:
             git checkout --orphan production
           fi
 
-          # 清空 + 全量同步裁剪产物 (来自 release 分支构建结果, 此处不裁剪)
+          # 全量同步裁剪产物 (来自 release 分支构建, 此处不裁剪)
           git rm -rf --cached . 2>/dev/null || true
           find . -mindepth 1 -not -path './.git' -not -path './.git/*' -delete 2>/dev/null || true
           cp -r /tmp/build_output/model .
           find model/ -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-          echo "$COMMIT_SHORT" > VERSION
+          # VERSION + MANIFEST 快照来自 release 分支生成的完整元数据
+          cp /tmp/build_output/VERSION .
+          cp /tmp/build_output/MANIFEST.snapshot.yaml .
 
-          git add model/ VERSION
+          git add model/ VERSION MANIFEST.snapshot.yaml
           if git diff --cached --quiet; then
             echo "ℹ️  无变更 (该 commit 已存在于此 production 历史中), 跳过"
           else
-            git commit -m "production: ${TAG} (source=${COMMIT_SHORT})"
+            git commit -m "production: ${TAG} (source=${COMMIT_SHORT}, release=${RELEASE_TAG})"
             git pull --rebase origin production 2>/dev/null || true
             git push --force-with-lease origin production
             echo "✅ production 分支已推送"
 
-            # tag
-            TAG_NAME="v${COMMIT_SHORT}_${RELEASE_DATE}"
-            git tag "$TAG_NAME" 2>/dev/null || git tag "${TAG_NAME}-$(date +%s)"
-            git push origin "$TAG_NAME" 2>/dev/null || true
-            echo "✅ tag: ${TAG_NAME}"
+            # 对外语义版本 tag
+            git tag "$SEMVER" 2>/dev/null || git tag "${SEMVER}-${RELEASE_DATE}"
+            git push origin "$SEMVER" 2>/dev/null || true
+            echo "✅ tag: ${SEMVER}"
           fi
 
-          # 创建同步分支 (人工 PR 合入 master)
+          # 创建同步分支 (人工 PR 合入 master, 三文件打包)
           echo ""
           echo "━━━ 创建 master 同步分支 ━━━"
           SYNC_BRANCH="sync/model-${COMMIT_SHORT}"
           git checkout master
           git pull origin master 2>/dev/null || true
           git checkout -b "$SYNC_BRANCH"
-          git checkout "$(git rev-parse production)" -- model/
+          git checkout "$(git rev-parse production)" -- model/ VERSION MANIFEST.snapshot.yaml
           if git diff --quiet && git diff --cached --quiet; then
             echo "  ℹ️  master 的 model/ 已是最新, 跳过"
           else
-            git commit -m "sync: model/ ← production (source=${COMMIT_SHORT})"
+            git commit -m "sync: model/ ← production (source=${COMMIT_SHORT}, release=${RELEASE_TAG})"
             git push origin "$SYNC_BRANCH" 2>&1
             echo "  ✅ 同步分支: ${SYNC_BRANCH}"
             echo "  📋 PR: https://github.com/Xubenbenn/algo-deploy/pull/new/${SYNC_BRANCH}"
